@@ -4,7 +4,8 @@
 4. mysql表锁，行锁，间隙锁
 5. volatile 
 6. OOM
-7. java反射是如何实现的
+7. java反射
 8. 动态代理
 9. 泛型，泛型擦除
 10. aqs
+11. mysql主从复制
