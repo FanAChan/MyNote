@@ -1,0 +1,20 @@
+RocketMQ高可用
+
+RocketMQ由NameServer注册中心集群、Producer生产者集群、Consumer消费者集群和若干Broker（RocketMQ进程）组成，它的架构原理是这样的：
+Broker在启动的时候去向所有的NameServer注册，并保持长连接，每30s发送一次心跳
+Producer在发送消息的时候从NameServer获取Broker服务器地址，根据负载均衡算法选择一台服务器来发送消息
+Conusmer消费消息的时候同样从NameServer获取Broker地址，然后主动拉取消息来消费
+
+Master和Slave之间是怎么同步数据的呢？
+而消息在master和slave之间的同步是根据raft协议来进行的：
+在broker收到消息后，会被标记为uncommitted状态
+然后会把消息发送给所有的slave
+slave在收到消息之后返回ack响应给master
+master在收到超过半数的ack之后，把消息标记为committed
+发送committed消息给所有slave，slave也修改状态为committed
+
+你知道RocketMQ为什么速度快吗？
+是因为使用了顺序存储、Page Cache和异步刷盘。
+我们在写入commitlog的时候是顺序写入的，这样比随机写入的性能就会提高很多
+写入commitlog的时候并不是直接写入磁盘，而是先写入操作系统的PageCache
+最后由操作系统异步将缓存中的数据刷到磁盘

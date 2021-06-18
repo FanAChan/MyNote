@@ -85,7 +85,7 @@ select @@ts_isolation
 2. 占用额外的物理空间
 
 - 结构图
-![image](http://img.mp.sohu.com/upload/20170713/358025867be14bb99bf8806b98e774d9_th.png)
+![image](../pic/b+tree.png)
 
 
 #### 索引使用
