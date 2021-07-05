@@ -424,7 +424,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
  
   ##### 内存存储结构
  ###### 压缩列表 ziplist
-ziplistNew，创建一个空的压缩链表，设置头部信息和尾部信息
+ziplistNew，创建一个空的压缩列表，设置头部信息和尾部信息
 ```
 /* Create a new empty ziplist. */
 unsigned char *ziplistNew(void) {
@@ -438,23 +438,23 @@ unsigned char *ziplistNew(void) {
 }
 ```
 
-添加元素对进入压缩链表
+添加元素对进入压缩列表
 ```
 /* Insert (element,score) pair in ziplist. This function assumes the element is
  * not yet present in the list. */
 unsigned char *zzlInsert(unsigned char *zl, sds ele, double score) {
-    //获取压缩链表的头节点位置
+    //获取压缩列表的头节点位置
     unsigned char *eptr = ziplistIndex(zl,0), *sptr;
     double s;
 
-    //从头开始遍历头节点，找到当前元素对应该在的节点位置
+    //从头开始遍历节点，找到当前元素对应该在的节点位置
     while (eptr != NULL) {
         sptr = ziplistNext(zl,eptr);
         serverAssert(sptr != NULL);
-        //下一个节点的最小sorce
+        //下一个节点的sorce
         s = zzlGetScore(sptr);
 
-        //下一节点的最小sorce大于当前sorce，即应该在当前节点
+        //下一节点的sorce大于当前sorce，即应该在当前位置插入
         if (s > score) {
             /* First element with score larger than score for element to be
              * inserted. This means we should take its spot in the list to
@@ -462,7 +462,7 @@ unsigned char *zzlInsert(unsigned char *zl, sds ele, double score) {
             zl = zzlInsertAt(zl,eptr,ele,score);
             break;
         } else if (s == score) {
-            //分数相同，按照字典序进行插入，若当前元素小于下一节点的首个元素，则应插入当前节点
+            //分数相同，按照字典序进行插入，若当前元素小于下一节点的元素，则应插入当前位置
             /* Ensure lexicographical ordering for elements. */
             if (zzlCompareElements(eptr,(unsigned char*)ele,sdslen(ele)) > 0) {
                 zl = zzlInsertAt(zl,eptr,ele,score);
@@ -475,7 +475,7 @@ unsigned char *zzlInsert(unsigned char *zl, sds ele, double score) {
     }
 
     /* Push on tail of list when it was not yet inserted. */
-    //插入链表尾部
+    //插入列表尾部
     if (eptr == NULL)
         zl = zzlInsertAt(zl,NULL,ele,score);
     return zl;
