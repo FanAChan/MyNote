@@ -506,6 +506,123 @@ unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, sds ele, doub
     return zl;
 }
 ```
+执行插入方法
+```
+/* Insert item at "p". */
+unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned char *s, unsigned int slen) {
+    size_t curlen = intrev32ifbe(ZIPLIST_BYTES(zl)), reqlen, newlen;
+    unsigned int prevlensize, prevlen = 0;
+    size_t offset;
+    //保存后继节点新旧编码的字节差值，如果为0，即编码不变，长度不变，
+    int nextdiff = 0;
+    unsigned char encoding = 0;
+    long long value = 123456789; /* initialized to avoid warning. Using a value
+                                    that is easy to see if for some reason
+                                    we use it uninitialized. */
+    zlentry tail;
+
+    /* Find out prevlen for the entry that is inserted. */
+    if (p[0] != ZIP_END) {
+        ZIP_DECODE_PREVLEN(p, prevlensize, prevlen);
+    } else {
+        unsigned char *ptail = ZIPLIST_ENTRY_TAIL(zl);
+        if (ptail[0] != ZIP_END) {
+            prevlen = zipRawEntryLengthSafe(zl, curlen, ptail);
+        }
+    }
+
+    /* See if the entry can be encoded */
+    if (zipTryEncoding(s,slen,&value,&encoding)) {
+        /* 'encoding' is set to the appropriate integer encoding */
+        reqlen = zipIntSize(encoding);
+    } else {
+        /* 'encoding' is untouched, however zipStoreEntryEncoding will use the
+         * string length to figure out how to encode it. */
+        reqlen = slen;
+    }
+    /* We need space for both the length of the previous entry and
+     * the length of the payload. */
+    reqlen += zipStorePrevEntryLength(NULL,prevlen);
+    reqlen += zipStoreEntryEncoding(NULL,encoding,slen);
+
+    /* When the insert position is not equal to the tail, we need to
+     * make sure that the next entry can hold this entry's length in
+     * its prevlen field. */
+    int forcelarge = 0;
+    nextdiff = (p[0] != ZIP_END) ? zipPrevLenByteDiff(p,reqlen) : 0;
+    //修复一个插入节点导致链表变小的bug，保证链表不缩小的前提就是后继节点的保存前节点的长度缩小的大小即4字节，跟新节点所需位置的和大于0
+    //bug原因：删除一个节点时，级联更新时为了性能不对后继节点的prelen字段缩小字节数，再新增reqlen小于4时，更新后一节点的prelenw为1个字节，
+    //缩小了4字节，导致结尾符号错乱，引起链表崩溃，所以小于nextdiff == -4 && reqlen < 4时，不对后继节点的prelen长度进行修改
+    //resize时zl[len-1] = ZIP_END; 这里位置错误了，丢弃了需要的字节
+    if (nextdiff == -4 && reqlen < 4) {
+        nextdiff = 0;
+        forcelarge = 1;
+    }
+
+    /* Store offset because a realloc may change the address of zl. */
+    offset = p-zl;
+    newlen = curlen+reqlen+nextdiff;
+    //ziplist扩容
+    zl = ziplistResize(zl,newlen);
+    p = zl+offset;
+
+    /* Apply memory move when necessary and update tail offset. */
+    if (p[0] != ZIP_END) {
+        /* Subtract one because of the ZIP_END bytes */
+        //向后移动数据以供新的数据插入
+        memmove(p+reqlen,p-nextdiff,curlen-offset-1+nextdiff);
+
+        /* Encode this entry's raw length in the next entry. */
+        //设置下一节点的前节点的大小
+        if (forcelarge)
+            zipStorePrevEntryLengthLarge(p+reqlen,reqlen);
+        else
+            zipStorePrevEntryLength(p+reqlen,reqlen);
+
+        /* Update offset for tail */
+        //修改ziplist的尾结点的偏移量
+        ZIPLIST_TAIL_OFFSET(zl) =
+            intrev32ifbe(intrev32ifbe(ZIPLIST_TAIL_OFFSET(zl))+reqlen);
+
+        /* When the tail contains more than one entry, we need to take
+         * "nextdiff" in account as well. Otherwise, a change in the
+         * size of prevlen doesn't have an effect on the *tail* offset. */
+        assert(zipEntrySafe(zl, newlen, p+reqlen, &tail, 1));
+        //如果当前节点后有多个节点，需要将nextdiff的字节数也加到表尾偏移量中，nextdiff为下一节点的长度变化值，也需要统计，
+        //即表尾节点的位置为tail = oldTail + newEntryLen + nextdiff,
+        if (p[reqlen+tail.headersize+tail.len] != ZIP_END) {
+            ZIPLIST_TAIL_OFFSET(zl) =
+                intrev32ifbe(intrev32ifbe(ZIPLIST_TAIL_OFFSET(zl))+nextdiff);
+        }
+    } else {
+        /* This element will be the new tail. */
+        //插入ziplist尾部
+        ZIPLIST_TAIL_OFFSET(zl) = intrev32ifbe(p-zl);
+    }
+
+    /* When nextdiff != 0, the raw length of the next entry has changed, so
+     * we need to cascade the update throughout the ziplist */
+    //当后一节点的长度被改变，需要级联更新
+    if (nextdiff != 0) {
+        offset = p-zl;
+        zl = __ziplistCascadeUpdate(zl,p+reqlen);
+        p = zl+offset;
+    }
+
+    /* Write the entry */
+    //写入entry数据，包括前节点大小，编码方式，以及内容
+    p += zipStorePrevEntryLength(p,prevlen);
+    p += zipStoreEntryEncoding(p,encoding,slen);
+    if (ZIP_IS_STR(encoding)) {
+        memcpy(p,s,slen);
+    } else {
+        zipSaveInteger(p,value,encoding);
+    }
+    //更新节点数量
+    ZIPLIST_INCR_LENGTH(zl,1);
+    return zl;
+}
+```
 
  ###### 快速列表 quicklist
  ```
