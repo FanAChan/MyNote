@@ -481,6 +481,31 @@ unsigned char *zzlInsert(unsigned char *zl, sds ele, double score) {
     return zl;
 }
 ```
+zzlInsertAt，实际将元素信息插入压缩列表
+```
+unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, sds ele, double score) {
+    unsigned char *sptr;
+    char scorebuf[128];
+    int scorelen;
+    size_t offset;
+
+    scorelen = d2string(scorebuf,sizeof(scorebuf),score);
+    if (eptr == NULL) {
+        zl = ziplistPush(zl,(unsigned char*)ele,sdslen(ele),ZIPLIST_TAIL);
+        zl = ziplistPush(zl,(unsigned char*)scorebuf,scorelen,ZIPLIST_TAIL);
+    } else {
+        /* Keep offset relative to zl, as it might be re-allocated. */
+        offset = eptr-zl;
+        zl = ziplistInsert(zl,eptr,(unsigned char*)ele,sdslen(ele));
+        eptr = zl+offset;
+
+        /* Insert score after the element. */
+        serverAssert((sptr = ziplistNext(zl,eptr)) != NULL);
+        zl = ziplistInsert(zl,sptr,(unsigned char*)scorebuf,scorelen);
+    }
+    return zl;
+}
+```
 
  ###### 快速列表 quicklist
  ```
