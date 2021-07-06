@@ -424,6 +424,51 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
  
   ##### 内存存储结构
  ###### 压缩列表 ziplist
+ ```
+struct ziplist<T>{
+    int32 zlbytes;//总大小
+    int32 zltail_offset;//到最后一个节点的偏移量
+    int16 zllength;//entry个数
+    T[] entries;//entry数组
+    int8 zlend; //结束标记，为常量0xFE，即255
+}
+```
+ 
+ ziplist的entry包装，不是实际保存的编码方式
+ ```
+/* We use this function to receive information about a ziplist entry.
+ * Note that this is not how the data is actually encoded, is just what we
+ * get filled by a function in order to operate more easily. */
+typedef struct zlentry {
+    //保存前一节点长度所使用的的字节大小
+    unsigned int prevrawlensize; /* Bytes used to encode the previous entry len*/
+    //前一节点的长度
+    unsigned int prevrawlen;     /* Previous entry len. */
+    //保存当前节点内容长度使用的字节大小
+    unsigned int lensize;        /* Bytes used to encode this entry type/len.
+                                    For example strings have a 1, 2 or 5 bytes
+                                    header. Integers always use a single byte.*/
+    //当前节点内容长度
+    unsigned int len;            /* Bytes used to represent the actual entry.
+                                    For strings this is just the string length
+                                    while for integers it is 1, 2, 3, 4, 8 or
+                                    0 (for 4 bit immediate) depending on the
+                                    number range. */
+    //节点头部大小
+    unsigned int headersize;     /* prevrawlensize + lensize. */
+    //节点编码方式
+    unsigned char encoding;      /* Set to ZIP_STR_* or ZIP_INT_* depending on
+                                    the entry encoding. However for 4 bits
+                                    immediate integers this can assume a range
+                                    of values and must be range-checked. */
+    //节点头指针
+    unsigned char *p;            /* Pointer to the very start of the entry, that
+                                    is, this points to prev-entry-len field. */
+} zlentry;
+```
+prelen在小于254时使用一个字节保存，大于等于254时使用5个字节保存，首字节使用特殊值0xFE即255保存，
+首字节为254时是一个特殊标记，即prelen小于254，但使用5个字节保存
+ 
 ziplistNew，创建一个空的压缩列表，设置头部信息和尾部信息
 ```
 /* Create a new empty ziplist. */
