@@ -444,7 +444,7 @@ typedef struct zlentry {
     unsigned int prevrawlensize; /* Bytes used to encode the previous entry len*/
     //前一节点的长度
     unsigned int prevrawlen;     /* Previous entry len. */
-    //保存当前节点内容长度使用的字节大小
+    //保存当前节点内容编码长度使用的字节大小
     unsigned int lensize;        /* Bytes used to encode this entry type/len.
                                     For example strings have a 1, 2 or 5 bytes
                                     header. Integers always use a single byte.*/
@@ -468,7 +468,27 @@ typedef struct zlentry {
 ```
 prelen在小于254时使用一个字节保存，大于等于254时使用5个字节保存，首字节使用特殊值0xFE即255保存，
 首字节为254时是一个特殊标记，即prelen小于254，但使用5个字节保存
- 
+
+将数据包装证entry对象
+ ```
+/* Fills a struct with all information about an entry.
+ * This function is the "unsafe" alternative to the one blow.
+ * Generally, all function that return a pointer to an element in the ziplist
+ * will assert that this element is valid, so it can be freely used.
+ * Generally functions such ziplistGet assume the input pointer is already
+ * validated (since it's the return value of another function). */
+static inline void zipEntry(unsigned char *p, zlentry *e) {
+    //得到前一节点长度和保存所用的字节数
+    ZIP_DECODE_PREVLEN(p, e->prevrawlensize, e->prevrawlen);
+    //得到当前节点的编码方式
+    ZIP_ENTRY_ENCODING(p + e->prevrawlensize, e->encoding);
+    //得到编码方式所占的空间以及内容的长度
+    ZIP_DECODE_LENGTH(p + e->prevrawlensize, e->encoding, e->lensize, e->len);
+    assert(e->lensize != 0); /* check that encoding was valid. */
+    e->headersize = e->prevrawlensize + e->lensize;
+    e->p = p;
+}
+```
 ziplistNew，创建一个空的压缩列表，设置头部信息和尾部信息
 ```
 /* Create a new empty ziplist. */
