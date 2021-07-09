@@ -7,7 +7,7 @@ struct dict {
     dictType *type;
     void *privdata;
     dictht ht[2];
-    long rehashidx;  /* rehashing not in progress if rehashidx == -1 是否正在rehash标记 */
+    long rehashidx;  /* rehashing not in progress if rehashidx == -1 是否正在rehash标记，以及rehash的位置 */
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
 } ;
 
@@ -24,6 +24,15 @@ struct dictEntry{
     void* val;
     dictEntry* next;
 }
+
+typedef struct dictIterator {
+    dict *d;
+    long index;
+    int table, safe;
+    dictEntry *entry, *nextEntry;
+    /* unsafe iterator fingerprint for misuse detection. */
+    long long fingerprint;
+} dictIterator;
 
 ```
 
@@ -167,4 +176,175 @@ static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **e
 ```
 hash攻击
 利用hash函数可能存在偏向性的特点，特定模式下的输入导致分布极度不均匀，导致查找效率急剧下降。
+
+**dictScan 迭代字典中的元素**
+> 遍历字典中的元素，每次返回游标桶内的所有元素，遍历过程中可能会重复返回相同元素，并返回下一次迭代的游标
+
+**核心算法**
+Reverse Binary Iteration：反向二进制位迭代，使用高位递增的方式进行迭代。  
+使用这种遍历链，可以减少数据的大量冗余和遍历消耗的时间
+
+**特点**
+ - 迭代结果可重复
+ - 整个迭代过程，**没有变化过的key（增加或删除）一定会出现在结果中**
+ 
+**遍历场景**
+
+- dictScan -> resize complete -> dictScan  
+**扩容**：例如初始size为4，已经遍历了0,4,2,6下标的桶内数据，现在进行了扩容，size变为8，再次dictScan时，则新的遍历顺序为1,9，
+5,13,3,11,7,15，不会再遍历8,12,10,14内的数据，因为这部分数据肯定是从0,4,2,6中rehash来的，已经完成了遍历了，减少重复数据  
+**缩容**：例如初始size为8，已经遍历了0,4,2,6下标的桶内数据，现在进行了缩容，size变为4，再次dictScan时，则新的遍历顺序为1,3，
+而旧表中的5,7内的数据则因为会被rehash到1,3中，也同样可以被遍历到，避免遗漏
+
+- dictScan -> rehashing -> dictScan
+当dict正在rehash时，则是通过先扫描较小的表，在扫描较大的表。
+先扫描较小的表的对应下标桶内的数据，在扫描该桶内可能rehash到新表的所有桶内的数据
+
+实现
+```
+unsigned long dictScan(dict *d,
+                       unsigned long v,
+                       dictScanFunction *fn,
+                       dictScanBucketFunction* bucketfn,
+                       void *privdata)
+{
+    dictht *t0, *t1;
+    const dictEntry *de, *next;
+    unsigned long m0, m1;
+
+    //空字典直接返回
+    if (dictSize(d) == 0) return 0;
+
+    /* This is needed in case the scan callback tries to do dictFind or alike. */
+    dictPauseRehashing(d);
+    
+    //如果不是正在rehash，则只需在旧表中迭代
+    if (!dictIsRehashing(d)) {
+        t0 = &(d->ht[0]);
+        m0 = t0->sizemask;
+
+        /* Emit entries at cursor */
+        if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
+        de = t0->table[v & m0];
+        while (de) {
+            next = de->next;
+            fn(privdata, de);
+            de = next;
+        }
+
+        /* Set unmasked bits so incrementing the reversed cursor
+         * operates on the masked bits */
+        v |= ~m0;
+        //高位加1，并非按顺序遍历表内元素
+        //减少重复问题，
+        //如原本size为8，先遍历了下标0,4的数据，之后进行了扩容，size变为16，则不需再遍历下标8,12内的数据，因为8,12内的数据
+        //肯定是从旧表中的0,4中迁移过来的，已经完成了遍历
+        /* Increment the reverse cursor */
+        v = rev(v);
+        v++;
+        v = rev(v);
+
+    } else {   
+        t0 = &d->ht[0];
+        t1 = &d->ht[1];
+
+        /* Make sure t0 is the smaller and t1 is the bigger table */
+        //保证t0的表是小表
+        if (t0->size > t1->size) {
+            t0 = &d->ht[1];
+            t1 = &d->ht[0];
+        }
+
+        m0 = t0->sizemask;
+        m1 = t1->sizemask;
+
+        /* Emit entries at cursor */
+        //先遍历小表桶内的元素
+        if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
+        de = t0->table[v & m0];
+        while (de) {
+            next = de->next;
+            fn(privdata, de);
+            de = next;
+        }
+
+        /* Iterate over indices in larger table that are the expansion
+         * of the index pointed to by the cursor in the smaller table */
+        //遍历可能从小表桶迁移到大表的对应桶内的元素
+        do {
+            /* Emit entries at cursor */
+            if (bucketfn) bucketfn(privdata, &t1->table[v & m1]);
+            de = t1->table[v & m1];
+            while (de) {
+                next = de->next;
+                fn(privdata, de);
+                de = next;
+            }
+
+            //v在小表的低位后缀保持不变，高位递增，扩展可能会迁移到新表中的位置
+            /* Increment the reverse cursor not covered by the smaller mask.*/
+            v |= ~m1;
+            v = rev(v);
+            v++;
+            v = rev(v);
+
+            /* Continue while bits covered by mask difference is non-zero */
+        } while (v & (m0 ^ m1));
+    }
+
+    dictResumeRehashing(d);
+
+    return v;
+}
+```
+
+- 个人想法  
+通过判断当前桶是否进行了rehash，如果已经进行了rehash，则在新表中查找所有可能的数据，
+如果尚未进行rehash，则只在旧表中进行查找对应桶内的数据。
+代码样例
+```
+t0 = &d->ht[0];
+t1 = &d->ht[1];
+m0 = t0->sizemask;
+m1 = t1->sizemask;
+
+//if rehashidx > v ，it mean those ele in the bucket had been moved to the new table,
+//we just neet to scan the buckets the ele may by moved into
+if(&d->rehashidx > v){
+    do {
+        /* Emit entries at cursor */
+        if (bucketfn) bucketfn(privdata, &t1->table[v & m1]);
+        de = t1->table[v & m1];
+        while (de) {
+            next = de->next;
+            fn(privdata, de);
+            de = next;
+        }
+
+        /* Increment the reverse cursor not covered by the smaller mask.*/
+        v |= ~m1;
+        v = rev(v);
+        v++;
+        v = rev(v);
+
+        /* Continue while bits covered by mask difference is non-zero */
+    } while (v & (m0 ^ m1));
+}else{
+    if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
+    de = t0->table[v & m0];
+    while (de) {
+        next = de->next;
+        fn(privdata, de);
+        de = next;
+    }
+    /* Set unmasked bits so incrementing the reversed cursor
+ * operates on the masked bits */
+    v |= ~m0;
+
+    /* Increment the reverse cursor */
+    v = rev(v);
+    v++;
+    v = rev(v);
+}
+```
 
