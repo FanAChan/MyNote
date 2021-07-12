@@ -196,9 +196,14 @@ Reverse Binary Iteration：反向二进制位迭代，使用高位递增的方�
 **缩容**：例如初始size为8，已经遍历了0,4,2,6下标的桶内数据，现在进行了缩容，size变为4，再次dictScan时，则新的遍历顺序为1,3，
 而旧表中的5,7内的数据则因为会被rehash到1,3中，也同样可以被遍历到，避免遗漏
 
-- dictScan -> rehashing -> dictScan
+- dictScan -> rehashing -> dictScan  
 当dict正在rehash时，则是通过先扫描较小的表，在扫描较大的表。
-先扫描较小的表的对应下标桶内的数据，在扫描该桶内可能rehash到新表的所有桶内的数据
+先扫描较小的表的对应下标桶内的数据，在扫描该桶内可能rehash到新表的所有桶内的数据  
+**扩容**：小表为旧表，大表为新表，根据下标先查找小表对应桶内对应的数据，然后再遍历可能rehash到新表中的桶内的数据。  
+新表中这些可能存在数据的桶的数据都是来自小表的当前下标的桶  
+**缩容**：小表为新表，大表为旧表，先根据下标查找小表内对应的数据，然后再遍历大表中对应下标桶内的数据。
+实际查找的是大表内的数据，大表内的数据rehash后只可能会在小表中的一个桶内。v = x + n 或 v = n，rehash后的下标为n。 
+小表内该桶内的数据可能对应了多个大表的不同桶。所以数据可能会重复。
 
 实现
 ```
@@ -298,53 +303,60 @@ unsigned long dictScan(dict *d,
 }
 ```
 
-- 个人想法  
-通过判断当前桶是否进行了rehash，如果已经进行了rehash，则在新表中查找所有可能的数据，
-如果尚未进行rehash，则只在旧表中进行查找对应桶内的数据。
-代码样例
+
+**dict.dictNext**
+
+**迭代器**
 ```
-t0 = &d->ht[0];
-t1 = &d->ht[1];
-m0 = t0->sizemask;
-m1 = t1->sizemask;
+typedef struct dictIterator {
+    dict *d;
+    long index; //遍历的下标
+    int table, safe;//遍历的表 ，以及是否安全比那里
+    dictEntry *entry, *nextEntry;//遍历的当前节点和该节点的下一节点
+    /* unsafe iterator fingerprint for misuse detection. */
+    long long fingerprint;//指纹
+} dictIterator;
+```
 
-//if rehashidx > v ，it mean those ele in the bucket had been moved to the new table,
-//we just neet to scan the buckets the ele may by moved into
-if(&d->rehashidx > v){
-    do {
-        /* Emit entries at cursor */
-        if (bucketfn) bucketfn(privdata, &t1->table[v & m1]);
-        de = t1->table[v & m1];
-        while (de) {
-            next = de->next;
-            fn(privdata, de);
-            de = next;
+```
+dictEntry *dictNext(dictIterator *iter)
+{
+    while (1) {
+        //当前节点为空，可能是未开始比那里，也可能是上一个桶内的节点已经全部遍历
+        if (iter->entry == NULL) {
+            dictht *ht = &iter->d->ht[iter->table];
+            //未开始遍历
+            if (iter->index == -1 && iter->table == 0) {
+                if (iter->safe)
+                    dictPauseRehashing(iter->d);
+                else
+                    iter->fingerprint = dictFingerprint(iter->d);
+            }
+            //遍历下一个桶
+            iter->index++;
+            //下标超过当前表的大小，判断是否在rehash，在rehash且则从新表从0开始继续遍历
+            if (iter->index >= (long) ht->size) {
+                if (dictIsRehashing(iter->d) && iter->table == 0) {
+                    iter->table++;
+                    iter->index = 0;
+                    ht = &iter->d->ht[1];
+                } else {
+                    break;
+                }
+            }
+            //对应桶内的头节点
+            iter->entry = ht->table[iter->index];
+        } else {
+            iter->entry = iter->nextEntry;
         }
-
-        /* Increment the reverse cursor not covered by the smaller mask.*/
-        v |= ~m1;
-        v = rev(v);
-        v++;
-        v = rev(v);
-
-        /* Continue while bits covered by mask difference is non-zero */
-    } while (v & (m0 ^ m1));
-}else{
-    if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
-    de = t0->table[v & m0];
-    while (de) {
-        next = de->next;
-        fn(privdata, de);
-        de = next;
+        if (iter->entry) {
+            /* We need to save the 'next' here, the iterator user
+             * may delete the entry we are returning. */
+            iter->nextEntry = iter->entry->next;
+            return iter->entry;
+        }
     }
-    /* Set unmasked bits so incrementing the reversed cursor
- * operates on the masked bits */
-    v |= ~m0;
-
-    /* Increment the reverse cursor */
-    v = rev(v);
-    v++;
-    v = rev(v);
+    return NULL;
 }
 ```
 
