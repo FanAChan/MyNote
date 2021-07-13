@@ -1,5 +1,8 @@
 
 ###### zset
+zset有两种实现方式，一种是ziplist，一种是dict+skiplist。由redis.conf进行控制，
+zset-max-ziplist-entries可配置使用ziplist的最大节点数，默认128，
+使用zset-max-ziplist-value配置ziplist支持最大的节点数据长度，默认64。
  ```
 robj *createZsetObject(void) {
     zset *zs = zmalloc(sizeof(*zs));
@@ -14,6 +17,16 @@ robj *createZsetObject(void) {
 }
 使用dict以及skiplist存储数据，skiplist对元素进行排序，dict存储ele对应的sorce
 ```
+> 使用ziplist实现。一个元素对使用两个节点存储，element在前，score在后的存储方式，按照score排序。
+```
+robj *createZsetZiplistObject(void) {
+    unsigned char *zl = ziplistNew();
+    robj *o = createObject(OBJ_ZSET,zl);
+    o->encoding = OBJ_ENCODING_ZIPLIST;
+    return o;
+}
+```
+
 zset.add
 ```
 int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, double *newscore) {
@@ -146,3 +159,33 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
     return 0; /* Never reached. */
 }
 ```
+
+zset在ziplist编码方式下的新增元素方法
+```
+unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, sds ele, double score) {
+    unsigned char *sptr;
+    char scorebuf[128];
+    int scorelen;
+    size_t offset;
+    
+    //将score转换成char数组
+    scorelen = d2string(scorebuf,sizeof(scorebuf),score);
+    //如果插入位置指针为空，即插入到ziplist尾部。
+    //一个元素对插入了两个节点，第一个存储element值，第二个存储score
+    if (eptr == NULL) {
+        zl = ziplistPush(zl,(unsigned char*)ele,sdslen(ele),ZIPLIST_TAIL);
+        zl = ziplistPush(zl,(unsigned char*)scorebuf,scorelen,ZIPLIST_TAIL);
+    } else {
+        /* Keep offset relative to zl, as it might be re-allocated. */
+        offset = eptr-zl;
+        zl = ziplistInsert(zl,eptr,(unsigned char*)ele,sdslen(ele));
+        eptr = zl+offset;
+
+        /* Insert score after the element. */
+        serverAssert((sptr = ziplistNext(zl,eptr)) != NULL);
+        zl = ziplistInsert(zl,sptr,(unsigned char*)scorebuf,scorelen);
+    }
+    return zl;
+}
+```
+
