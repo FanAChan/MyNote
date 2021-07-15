@@ -25,7 +25,7 @@ typedef struct quicklistNode {
     unsigned int count : 16;     /* count of items in ziplist */
     unsigned int encoding : 2;   /* RAW==1 or LZF==2 是否被压缩了*/
     unsigned int container : 2;  /* NONE==1 or ZIPLIST==2 */
-    unsigned int recompress : 1; /* was this node previous compressed? 是否已经解压？ */
+    unsigned int recompress : 1; /* was this node previous compressed? 是否已经被解压，其需要在下一次操作时重新压缩 */
     unsigned int attempted_compress : 1; /* node can't compress; too small */
     unsigned int extra : 10; /* more bits to steal for future usage */
 } quicklistNode;
@@ -44,4 +44,28 @@ typedef struct quicklistLZF {
     unsigned int sz; /* LZF size in bytes*/
     char compressed[];
 } quicklistLZF;
+```
+**quicklistIter**
+> quicklist迭代器
+```
+typedef struct quicklistIter {
+    const quicklist *quicklist;
+    quicklistNode *current;
+    unsigned char *zi;
+    long offset; /* offset in current ziplist */
+    int direction;
+} quicklistIter;
+```
+**quicklistEntry**
+> 对ziplist中的entry概念的封装，不希望使用者感知到其内部实现。
+```
+typedef struct quicklistEntry {
+    const quicklist *quicklist;
+    quicklistNode *node;
+    unsigned char *zi;
+    unsigned char *value;
+    long long longval;
+    unsigned int sz;
+    int offset;
+} quicklistEntry;
 ```
