@@ -1,9 +1,17 @@
+##### sql执行过程
+>update table set column1 = y where column2 = X 
+>1. 将记录所在的页找到并加载到内存中，进行修改(如果只修改内存未落入磁盘可能导致修改丢失，立马刷盘的性能差)
+>2. 写入redo log，记录页上的修改。redo log顺序IO，速度很快。redo log buffer（MySQL进程缓冲）-> os buffer（系统缓冲） -> disk
+>3. 写入bin log缓存并写入磁盘
 
-update table set column1 = y where column2 = X 
-sql执行过程
-1. 将记录所在的页找到并加载到内存中，进行修改(如果只修改内存未落入磁盘可能导致修改丢失，立马刷盘的性能差)
-2. 写入redo log，记录页上的修改。redo log顺序IO，速度很快。redo log buffer（MySQL进程缓冲）-> os buffer（系统缓冲） -> disk
-3. 写入bin log缓存并写入磁盘
+##### WAL技术
+全称是 Write-Ahead Logging ，
+它的关键点就是先写日志，再写磁盘，保证持久化到磁盘。
+是一种实现事务日志的标准方法。  
+具体而言就是:  
+1、修改记录前，一定要先写日志；  
+2、事务提交过程中，一定要保证日志先落盘，才能算事务提交完成。
+ 
 #### redolog
 > 物理日志（数据页的变更），记录的是页的物理修改操作，记录事务执行后的状态    
 > 作用：用于恢复未写入data file(磁盘)的已成功的事务更新的数据，保证持久化  
@@ -11,6 +19,10 @@ sql执行过程
 > 事务开始的时候，就开始记录每次的变更信息  
 > 降低对数据页刷盘的要求，恢复时速度会比（binlog）快很多，循环写，会覆盖  
 > 顺序写，在数据库运行期间不需要对redolog文件进行读取操作.
+
+更新数据时只更新内存的change buffer，但是在事务提交的时候，我们把 change buffer 的操作也记录到 redo log 里了，
+所以崩溃恢复的时候， changebuffer 也能找回来。这就是redo log在崩溃恢复中的作用。
+
 
 
 innodb存储引擎在启动时会尝试进行恢复操作。
