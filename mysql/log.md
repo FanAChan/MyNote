@@ -64,6 +64,8 @@ innodb_flush_log_at_trx_commit = 0|1|2
 1. binlog代替redolog进行数据恢复？
     binlog是逻辑日志，进行数据恢复相当于重新执行一次sql，性能较差，
     数据落盘是以页为单位的，而一个sql可能涉及了多个页，一旦crash，只有部分页落盘了，那么根据sql进行重放就会出错，
+    且没有刷盘标识（LSN log seq Number），无法知道哪部分数据已经刷盘成功
+    todo:（使用row格式的binlog是否可以恢复到更新前的数据？？）
     而redolog 已经刷盘的数据是会擦除的，且redolog记录的是页上的修改
 2. 只使用redolog不使用binlog?redolog代替binlog进行主从复制?
     redolog是循环写，历史日志无法保留，无法进行数据复制
@@ -100,8 +102,12 @@ innodb_flush_log_at_trx_commit = 0|1|2
 > 随机读写    
 > 用于事务失败时的回滚操作和MVCC
 > 当用户读取一行记录，若该记录已经被其他事务占用，当前事务可以通过undo读取之前的行版本信息，以此实现非锁定读取。
-> undolog会产生redolog，因为undolog也需要持久性保护。
+> undolog会产生redolog，因为undolog也需要持久性保护。(Undo和Redo Log的这种关联，使得持久化变得复杂起来。为了降低复杂度，
+>InnoDB 将 Undo Log 看作数据，因此记录Undo Log的操作也会记录到redo log中。这样undo log就可以象数据一样缓存起来， 而不用在redo log之前写入磁盘了)
 > 保证原子性 一致性
+
+回滚操作本质上也是对数据进行修改，因此回滚时对数据的操作也会记录到Redo Log中。
+一个被回滚了的事务在恢复时的操作就是先redo再undo，因此不会破坏数据的一致性。
 
 redo和undo都可以视为一种恢复操作，redo恢复提交事务修改的页操作，undo回滚行记录到某个特定版
 事务执行完成的标志是写完redolog和undolog。如果在写redo log的时候断电，事务则没有执行完毕，则会根据undolog回滚到事务之前
