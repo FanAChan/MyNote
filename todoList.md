@@ -2,6 +2,5 @@
 4. mysql表锁，行锁，间隙锁
 10. tomcat netty
 11. volatie 内存屏障
-14. reactor模型
 15. 分库分表
 16. Memcached 多线程
