@@ -97,7 +97,44 @@
 从节点加载新数据集时会阻塞，删除旧数据可以使用其它线程
 - 全量同步时间过长时
 - 当多个从节点向主节点发送同步请求，会执行一个单独的后台保存，以便于为多个 slave 服务。？？
+- 磁盘性能低的话可以进行无盘复制，
+- 可写的从节点不会将数据传播到与该节点相连的子从节点，子从节点只会接收到最顶层的master的复制流 
+- 可配置在只有当N个节点在M时间内同步成功才被实际写入
+- 在执行lua时，redis默认不允许动态的、不确定性的变量存在，如果存在，需要开启命令复制模式，所有的写命令都会包装在multi...exec里
+- 在执行lua时，redis默认是复制整个脚本的内容，定义为whole scripts replication，而只复制写命令的模式定义为script effects replication
 
+- 过期key的同步
+    - 不能依赖主从使用同步时钟，一是无法使用同步时钟，二是会导致数据集不一致的问题
+    - 从节点不对key进行过期处理，主节点中key过期后发送del命令同步到所有的子节点
+    - 针对无法即时同步master的del命令的情况，从节点使用逻辑时钟判断key是否已经过期，保证跟主节点的一致性读取操作，但不进行删除操作
+    - 在lua脚本执行过程中，master的时间是相当于被冻结的，以脚本执行开始时间对key进行过期处理，也要保证把相同的lua脚本发送到从节点
+    
+- Replication ID
+    - 标记一个指定的历史数据集
+    - master重启或者一个从节点升级为master都会生成一个新的replication ID
+    - 从节点与主节点连接后获取到replication ID
+    - 具有相同replication ID的节点的数据是相同的，但不一定是在同一时间
+    - 从节点升级为主节点的过程中，会存在两个Replication ID
+        - 升级为主节点时，从节点需要保留上一个主节点的replication ID以及复制偏移量offset
+        - 其它从节点使用旧的主节点 replication ID 和offset进行重同步时，新的主节点会匹配两个replication ID，
+        发生故障转移时从节点连接新的主节点时不需要进行全量同步
+    ```
+    redismodule.h
+    typedef struct RedisModuleReplicationInfo {
+        uint64_t version;       /* Not used since this structure is never passed
+                                   from the module to the core right now. Here
+                                   for future compatibility. */
+        int master;             /* true if master, false if replica */
+        char *masterhost;       /* master instance hostname for NOW_REPLICA */
+        int masterport;         /* master instance port for NOW_REPLICA */
+        char *replid1;          /* Main replication ID */
+        char *replid2;          /* Secondary replication ID */
+        uint64_t repl1_offset;  /* Main replication offset */
+        uint64_t repl2_offset;  /* Offset of replid2 validity */
+    } RedisModuleReplicationInfoV1;
+    ```
+    - 使用新的replication ID是因为可能发生网络分区等原因进行的故障转移，继续使用同一个replication ID违背了
+    同一个replication ID具有相同数据集的约定。
 ### 哨兵
 > Sentinel,是一种分布式架构，包含多个Sentinel节点和Redis数据节点。每个Sentinel节点会对数据节点和其余
 > Sentinel节点进行监控，当它发现节点不可达时，会对节点做下线标识。当被标识节点是主节点时，还会同Sentinel
