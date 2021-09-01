@@ -4,3 +4,4 @@
 11. volatie 内存屏障
 15. 分库分表
 16. Memcached 多线程
+17. redis 单线程
