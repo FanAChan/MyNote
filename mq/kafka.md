@@ -1,0 +1,1 @@
+- 使用pull的方式，consumer根据自己的消费能力主动到broker中pull消息，且可以控制消费进度
